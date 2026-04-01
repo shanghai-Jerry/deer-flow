@@ -1,19 +1,35 @@
 ---
 name: video-generation
-description: Use this skill when the user requests to generate, create, or imagine videos. Supports structured prompts and reference image for guided generation.
+description: Use this skill when the user requests to generate, create, or imagine videos or images. Supports Volcengine Ark (Seedance/Doubao) providers.
 ---
 
-# Video Generation Skill
+# Video & Image Generation Skill
 
 ## Overview
 
-This skill generates high-quality videos using structured prompts and a Python script. The workflow includes creating JSON-formatted prompts and executing video generation with optional reference image.
+This skill generates high-quality videos and images using structured prompts and Python scripts. It supports:
+
+- **Volcengine Ark (Seedance)** — Video generation (text-to-video, image-to-video)
+- **Volcengine Ark (Doubao Seedream)** — Image generation (text-to-image)
+
+**Requires**: `ARK_API_KEY` environment variable
+
+## Environment Paths
+
+| Item | Path |
+|---|---|
+| Scripts | `/mnt/skills/public/video-generation/scripts/` |
+| Workspace (prompts) | `/mnt/user-data/workspace/` |
+| Output files | `/mnt/user-data/outputs/` |
+
+> You don't need to check the folder under `/mnt/user-data`.
 
 ## Core Capabilities
 
-- Create structured JSON prompts for AIGC video generation
-- Support reference image as guidance or the first/last frame of the video
-- Generate videos through automated Python script execution
+- Create structured prompts for AI video/image generation
+- Generate reference images to guide video generation (optional but recommended)
+- Generate videos through async task submission + polling + download
+- Generate images through synchronous API calls
 
 ## Workflow
 
@@ -31,109 +47,170 @@ When a user requests video generation, identify:
 
 Generate a structured JSON file in `/mnt/user-data/workspace/` with naming pattern: `{descriptive-name}.json`
 
-### Step 3: Create Reference Image (Optional when image-generation skill is available)
+### Step 3: Generate Reference Image (Optional, Recommended for Video)
 
-Generate reference image for the video generation.
+If reference images would improve video quality, generate them first using the image generation script:
 
-- If only 1 image is provided, use it as the guided frame of the video
-
-### Step 3: Execute Generation
-
-Call the Python script:
 ```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/prompt-file.json \
-  --reference-images /path/to/ref1.jpg \
-  --output-file /mnt/user-data/outputs/generated-video.mp4 \
-  --aspect-ratio 16:9
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
+  --prompt "A detailed description of the desired scene..." \
+  --output-file /mnt/user-data/outputs/reference.jpg \
+  --size 2K
+```
+
+- If only 1 image is provided, it will be used as the guided frame of the video
+- Reference images significantly enhance generation quality and visual consistency
+
+### Step 4: Execute Generation
+
+Choose the appropriate script based on the task type.
+
+---
+
+## Volcengine Video Generation
+
+**Script**: `/mnt/skills/public/video-generation/scripts/generate_volcengine_video.py`
+**Requires**: `ARK_API_KEY` environment variable
+**Model**: `doubao-seedance-1-5-pro-251215` (default)
+
+### Text-to-Video
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
+  --prompt "A cat playing piano in a jazz bar, cinematic lighting" \
+  --output-file /mnt/user-data/outputs/output.mp4 \
+  --duration 5 \
+  --ratio 16:9
+```
+
+Or using a prompt file:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
+  --prompt-file /mnt/user-data/workspace/prompt.txt \
+  --output-file /mnt/user-data/outputs/output.mp4
+```
+
+### Image-to-Video
+
+Use the reference image generated in Step 3:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
+  --prompt "Animate the scene with slow camera zoom" \
+  --reference-images /mnt/user-data/outputs/reference.jpg \
+  --output-file /mnt/user-data/outputs/output.mp4 \
+  --duration 5 \
+  --ratio 16:9
+```
+
+Reference images can be local file paths or HTTP URLs.
+
+Parameters:
+
+| Parameter | Required | Default | Description |
+|---|---|---|---|
+| `--prompt` | No* | — | Text prompt (use `--prompt-file` instead for file-based prompts) |
+| `--prompt-file` | No* | — | Path to a text file containing the prompt |
+| `--reference-images` | No | — | Paths to reference images or HTTP URLs (space-separated) |
+| `--output-file` | Yes | — | Absolute path to save the generated video (.mp4) |
+| `--model` | No | doubao-seedance-1-5-pro-251215 | Volcengine Ark model identifier |
+| `--duration` | No | 5 | Video duration in seconds (5 or 10) |
+| `--ratio` | No | 16:9 | Aspect ratio (16:9, 9:16, or 1:1) |
+| `--generate-audio` | No | false | Generate audio for the video |
+
+*One of `--prompt` or `--prompt-file` is required.
+
+**Flow**: Submit async task → Poll status (5s interval) → Download video on completion.
+
+> Do NOT read the Python script. Just call it with the appropriate parameters.
+
+---
+
+## Volcengine Image Generation
+
+**Script**: `/mnt/skills/public/video-generation/scripts/generate_volcengine_image.py`
+**Requires**: `ARK_API_KEY` environment variable
+**Model**: `doubao-seedream-4-5-251128` (default)
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
+  --prompt "A serene Japanese garden with cherry blossoms, watercolor style" \
+  --output-file /mnt/user-data/outputs/output.png \ 
+  --size 2K
 ```
 
 Parameters:
 
-- `--prompt-file`: Absolute path to JSON prompt file (required)
-- `--reference-images`: Absolute paths to reference image (optional)
-- `--output-file`: Absolute path to output image file (required)
-- `--aspect-ratio`: Aspect ratio of the generated image (optional, default: 16:9)
+| Parameter | Required | Default | Description |
+|---|---|---|---|
+| `--prompt` | Yes | — | Text prompt for image generation |
+| `--output-file` | Yes | — | Absolute path to save the generated image |
+| `--model` | No | doubao-seedream-4-5-251128 | Volcengine Ark model identifier |
+| `--size` | No | 2K | Image size (2K, 4K, or WxH format like 1024x1024) |
+| `--num` | No | 1 | Number of images to generate (1-4) |
+| `--seed` | No | — | Optional seed for reproducibility |
 
-[!NOTE]
-Do NOT read the python file, instead just call it with the parameters.
+**Flow**: Synchronous API call → Download image(s) from returned URL(s).
+
+> Do NOT read the Python script. Just call it with the appropriate parameters.
+
+---
 
 ## Video Generation Example
 
-User request: "Generate a short video clip depicting the opening scene from "The Chronicles of Narnia: The Lion, the Witch and the Wardrobe"
+User request: "Generate a short video clip depicting the opening scene from The Chronicles of Narnia"
 
-Step 1: Search for the opening scene of "The Chronicles of Narnia: The Lion, the Witch and the Wardrobe" online
+### Step 1: Research & Plan
 
-Step 2: Create a JSON prompt file with the following content:
+Search for details about the opening scene of "The Chronicles of Narnia: The Lion, the Witch and the Wardrobe".
 
-```json
-{
-  "title": "The Chronicles of Narnia - Train Station Farewell",
-  "background": {
-    "description": "World War II evacuation scene at a crowded London train station. Steam and smoke fill the air as children are being sent to the countryside to escape the Blitz.",
-    "era": "1940s wartime Britain",
-    "location": "London railway station platform"
-  },
-  "characters": ["Mrs. Pevensie", "Lucy Pevensie"],
-  "camera": {
-    "type": "Close-up two-shot",
-    "movement": "Static with subtle handheld movement",
-    "angle": "Profile view, intimate framing",
-    "focus": "Both faces in focus, background soft bokeh"
-  },
-  "dialogue": [
-    {
-      "character": "Mrs. Pevensie",
-      "text": "You must be brave for me, darling. I'll come for you... I promise."
-    },
-    {
-      "character": "Lucy Pevensie",
-      "text": "I will be, mother. I promise."
-    }
-  ],
-  "audio": [
-    {
-      "type": "Train whistle blows (signaling departure)",
-      "volume": 1
-    },
-    {
-      "type": "Strings swell emotionally, then fade",
-      "volume": 0.5
-    },
-    {
-      "type": "Ambient sound of the train station",
-      "volume": 0.5
-    }
-  ]
-}
+### Step 2: Create Prompt
+
+Write a detailed text prompt:
+
+```
+World War II evacuation scene at a crowded London train station. Steam and smoke fill the air as children are being sent to the countryside to escape the Blitz. Close-up two-shot of Mrs. Pevensie and young Lucy Pevensie on the platform. Mrs. Pevensie says "You must be brave for me, darling. I'll come for you... I promise." Lucy responds "I will be, mother. I promise." A train whistle blows as the train begins to depart. Strings swell emotionally in the background. Cinematic lighting, 1940s period detail, warm golden tones mixed with cool blues of the steam.
 ```
 
-Step 3: Use the image-generation skill to generate the reference image
+### Step 3: Generate Reference Image (Optional)
 
-Load the image-generation skill and generate a single reference image `narnia-farewell-scene-01.jpg` according to the skill.
+Generate a reference image first for better video quality:
 
-Step 4: Use the generate.py script to generate the video
 ```bash
-python /mnt/skills/public/video-generation/scripts/generate.py \
-  --prompt-file /mnt/user-data/workspace/narnia-farewell-scene.json \
-  --reference-images /mnt/user-data/outputs/narnia-farewell-scene-01.jpg \
-  --output-file /mnt/user-data/outputs/narnia-farewell-scene-01.mp4 \
-  --aspect-ratio 16:9
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
+  --prompt "World War II London train station, Mrs. Pevensie and young Lucy saying goodbye, steam and crowd, cinematic 1940s period detail, warm golden lighting, close-up two-shot" \
+  --output-file /mnt/user-data/outputs/reference.jpg \
+  --size 2K
 ```
-> Do NOT read the python file, just call it with the parameters.
+
+### Step 4: Execute Video Generation
+
+Using the reference image from Step 3:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
+  --prompt "World War II evacuation scene at a crowded London train station. Steam and smoke fill the air as children are being sent to the countryside to escape the Blitz. Close-up two-shot of Mrs. Pevensie and young Lucy Pevensie on the platform." \
+  --reference-images /mnt/user-data/outputs/reference.jpg \
+  --output-file /mnt/user-data/outputs/output.mp4 \
+  --duration 5 \
+  --ratio 16:9
+```
 
 ## Output Handling
 
 After generation:
 
 - Videos are typically saved in `/mnt/user-data/outputs/`
-- Share generated videos (come first) with user as well as generated image if applicable, using `present_files` tool
-- Provide brief description of the generation result
-- Offer to iterate if adjustments needed
+- Present the generated video to the user first using the appropriate presentation tool
+- If a reference image was generated (Step 3), present it after the video
+- Provide a brief description of the generation result
+- Offer to iterate or adjust if improvements are needed
 
 ## Notes
 
-- Always use English for prompts regardless of user's language
-- JSON format ensures structured, parsable prompts
-- Reference image enhance generation quality significantly
-- Iterative refinement is normal for optimal results
+- Always use English for prompts regardless of the user's language
+- Detailed, descriptive prompts produce significantly better results
+- Reference images enhance generation quality, especially for visual consistency
+- Video generation is async and may take several minutes — inform the user about estimated wait time
+- Volcengine Ark video/image URLs are temporary; files are automatically downloaded to the specified output path
