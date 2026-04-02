@@ -19,92 +19,253 @@ This skill generates high-quality videos and images using structured prompts and
 | Item | Path |
 |---|---|
 | Scripts | `/mnt/skills/public/video-generation/scripts/` |
-| Workspace (prompts) | `/mnt/user-data/workspace/` |
+| Workspace (prompts & status) | `/mnt/user-data/workspace/` |
 | Output files | `/mnt/user-data/outputs/` |
 
 > You don't need to check the folder under `/mnt/user-data`.
 
-## Core Capabilities
+---
 
-- Create structured prompts for AI video/image generation
-- Generate reference images to guide video generation (optional but recommended)
-- Generate videos through async task submission + polling + download
-- Generate images through synchronous API calls
+## Task Status Tracking
 
-## Workflow
+The skill uses JSON status files in `/mnt/user-data/workspace/` to track whether image or video generation tasks are currently running. These files enable the Agent (and users) to check task status at any time.
 
-### Step 1: Understand Requirements
+### Status Files
 
-When a user requests video generation, identify:
+| File | Purpose |
+|---|---|
+| `/mnt/user-data/workspace/image_generation_status.json` | Tracks image generation task status |
+| `/mnt/user-data/workspace/video_generation_status.json` | Tracks video generation task status |
 
-- Subject/content: What should be in the image
-- Style preferences: Art style, mood, color palette
-- Technical specs: Aspect ratio, composition, lighting
-- Reference image: Any image to guide generation
-- You don't need to check the folder under `/mnt/user-data`
+### Status File Format
 
-### Step 2: Create Structured Prompt
+Both status files share the same JSON structure:
 
-Generate a structured JSON file in `/mnt/user-data/workspace/` with naming pattern: `{descriptive-name}.json`
-
-### Step 3: Generate Reference Image (Optional, Recommended for Video)
-
-If reference images would improve video quality, generate them first using the image generation script:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
-  --prompt "A detailed description of the desired scene..." \
-  --output-file /mnt/user-data/outputs/reference.jpg \
-  --size 2K
+```json
+{
+  "status": "idle",
+  "prompt": "the prompt used for generation",
+  "output_path": "/mnt/user-data/outputs/xxx.png",
+  "started_at": null,
+  "completed_at": null,
+  "error": null
+}
 ```
 
-- If only 1 image is provided, it will be used as the guided frame of the video
-- Reference images significantly enhance generation quality and visual consistency
+**Possible `status` values:**
 
-### Step 4: Execute Generation
+| Status | Meaning |
+|---|---|
+| `idle` | No task running, no previous result |
+| `running` | A generation task is currently in progress |
+| `completed` | Task finished successfully, output file is ready |
+| `failed` | Task ended with an error, check `error` field for details |
 
-Choose the appropriate script based on the task type.
+### Checking Status
+
+To check whether any generation task is running, read the status files:
+
+```bash
+cat /mnt/user-data/workspace/image_generation_status.json
+cat /mnt/user-data/workspace/video_generation_status.json
+```
+
+**Decision rules based on status:**
+
+- `running` — A task is in progress. Wait for it to complete, or inform the user that a task is already running.
+- `completed` — The previous task succeeded. The output file path is in `output_path`. You may reuse the result or start a new task.
+- `failed` — The previous task failed. Check `error` for details. You may retry or inform the user.
+- `idle` — No task has been executed yet. Safe to proceed.
 
 ---
 
-## Volcengine Video Generation
+## Automated Execution Workflow
+
+**CRITICAL**: When this skill is triggered, execute the full pipeline immediately without asking the user for confirmation. Do not stop to ask "shall I proceed?" or "is this OK?" — just run the pipeline directly.
+
+The standard pipeline for video generation has 3 phases:
+
+### Phase 1: Check Status & Generate Prompt
+
+1. Read both status files. If either shows `running`, inform the user and wait.
+2. Analyze the user's request and identify: subject, style, mood, composition, aspect ratio, lighting.
+3. Generate a detailed English prompt (always use English for prompts regardless of user language).
+4. Save the prompt as a JSON file: `/mnt/user-data/workspace/{descriptive-name}.json`
+5. Update `image_generation_status.json`:
+
+```json
+{
+  "status": "idle",
+  "prompt": "the generated prompt text",
+  "output_path": null,
+  "started_at": null,
+  "completed_at": null,
+  "error": null
+}
+```
+
+### Phase 2: Generate Image
+
+Generate a reference image to guide video generation (reference images significantly enhance quality and visual consistency).
+
+1. Update `/mnt/user-data/workspace/image_generation_status.json` to `running`:
+
+```json
+{
+  "status": "running",
+  "prompt": "the prompt text",
+  "output_path": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "started_at": "<current ISO timestamp>",
+  "completed_at": null,
+  "error": null
+}
+```
+
+2. Execute the image generation script:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
+  --prompt "<the generated prompt>" \
+  --output-file /mnt/user-data/outputs/{descriptive-name}_reference.png \
+  --size 2K
+```
+
+3. On success, update the status file:
+
+```json
+{
+  "status": "completed",
+  "prompt": "the prompt text",
+  "output_path": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "started_at": "<start timestamp>",
+  "completed_at": "<current ISO timestamp>",
+  "error": null
+}
+```
+
+4. On failure, update the status file:
+
+```json
+{
+  "status": "failed",
+  "prompt": "the prompt text",
+  "output_path": null,
+  "started_at": "<start timestamp>",
+  "completed_at": "<current ISO timestamp>",
+  "error": "<error message from script output>"
+}
+```
+
+5. If image generation fails, **stop the pipeline** and inform the user. Do not proceed to video generation without a reference image.
+
+### Phase 3: Generate Video
+
+Use the reference image from Phase 2 to generate the video.
+
+1. Update `/mnt/user-data/workspace/video_generation_status.json` to `running`:
+
+```json
+{
+  "status": "running",
+  "prompt": "the prompt text",
+  "output_path": "/mnt/user-data/outputs/{descriptive-name}.mp4",
+  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "started_at": "<current ISO timestamp>",
+  "completed_at": null,
+  "error": null
+}
+```
+
+2. Execute the video generation script:
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
+  --prompt "<the generated prompt>" \
+  --reference-images /mnt/user-data/outputs/{descriptive-name}_reference.png \
+  --output-file /mnt/user-data/outputs/{descriptive-name}.mp4 \
+  --duration 5 \
+  --ratio 16:9
+```
+
+3. On success, update the status file:
+
+```json
+{
+  "status": "completed",
+  "prompt": "the prompt text",
+  "output_path": "/mnt/user-data/outputs/{descriptive-name}.mp4",
+  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "started_at": "<start timestamp>",
+  "completed_at": "<current ISO timestamp>",
+  "error": null
+}
+```
+
+4. On failure, update the status file:
+
+```json
+{
+  "status": "failed",
+  "prompt": "the prompt text",
+  "output_path": null,
+  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "started_at": "<start timestamp>",
+  "completed_at": "<current ISO timestamp>",
+  "error": "<error message from script output>"
+}
+```
+
+### Phase 4: Present Results
+
+After the pipeline completes:
+
+1. Present the generated video to the user using the appropriate presentation tool.
+2. Then present the reference image.
+3. Provide a brief description of the generation result.
+4. If the pipeline failed at any phase, clearly explain what went wrong and offer to retry.
+
+---
+
+## Script Reference
+
+### Volcengine Image Generation
+
+**Script**: `/mnt/skills/public/video-generation/scripts/generate_volcengine_image.py`
+**Model**: `doubao-seedream-4-5-251128` (default)
+
+```bash
+python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
+  --prompt "<prompt>" \
+  --output-file /mnt/user-data/outputs/output.png \
+  --size 2K
+```
+
+Parameters:
+
+| Parameter | Required | Default | Description |
+|---|---|---|---|
+| `--prompt` | Yes | — | Text prompt for image generation |
+| `--output-file` | Yes | — | Absolute path to save the generated image |
+| `--model` | No | doubao-seedream-4-5-251128 | Volcengine Ark model identifier |
+| `--size` | No | 2K | Image size (2K, 4K, or WxH format like 1024x1024) |
+| `--num` | No | 1 | Number of images to generate (1-4) |
+| `--seed` | No | — | Optional seed for reproducibility |
+
+**Flow**: Synchronous API call → Download image(s) from returned URL(s).
+
+### Volcengine Video Generation
 
 **Script**: `/mnt/skills/public/video-generation/scripts/generate_volcengine_video.py`
-**Requires**: `ARK_API_KEY` environment variable
 **Model**: `doubao-seedance-1-5-pro-251215` (default)
 
-### Text-to-Video
-
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
-  --prompt "A cat playing piano in a jazz bar, cinematic lighting" \
+  --prompt "<prompt>" \
+  --reference-images /mnt/user-data/outputs/reference.png \
   --output-file /mnt/user-data/outputs/output.mp4 \
   --duration 5 \
   --ratio 16:9
 ```
-
-Or using a prompt file:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
-  --prompt-file /mnt/user-data/workspace/prompt.txt \
-  --output-file /mnt/user-data/outputs/output.mp4
-```
-
-### Image-to-Video
-
-Use the reference image generated in Step 3:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
-  --prompt "Animate the scene with slow camera zoom" \
-  --reference-images /mnt/user-data/outputs/reference.jpg \
-  --output-file /mnt/user-data/outputs/output.mp4 \
-  --duration 5 \
-  --ratio 16:9
-```
-
-Reference images can be local file paths or HTTP URLs.
 
 Parameters:
 
@@ -123,94 +284,21 @@ Parameters:
 
 **Flow**: Submit async task → Poll status (5s interval) → Download video on completion.
 
-> Do NOT read the Python script. Just call it with the appropriate parameters.
+> Do NOT read the Python scripts. Just call them with the appropriate parameters.
 
 ---
 
-## Volcengine Image Generation
+## Image-Only Generation
 
-**Script**: `/mnt/skills/public/video-generation/scripts/generate_volcengine_image.py`
-**Requires**: `ARK_API_KEY` environment variable
-**Model**: `doubao-seedream-4-5-251128` (default)
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
-  --prompt "A serene Japanese garden with cherry blossoms, watercolor style" \
-  --output-file /mnt/user-data/outputs/output.png \ 
-  --size 2K
-```
-
-Parameters:
-
-| Parameter | Required | Default | Description |
-|---|---|---|---|
-| `--prompt` | Yes | — | Text prompt for image generation |
-| `--output-file` | Yes | — | Absolute path to save the generated image |
-| `--model` | No | doubao-seedream-4-5-251128 | Volcengine Ark model identifier |
-| `--size` | No | 2K | Image size (2K, 4K, or WxH format like 1024x1024) |
-| `--num` | No | 1 | Number of images to generate (1-4) |
-| `--seed` | No | — | Optional seed for reproducibility |
-
-**Flow**: Synchronous API call → Download image(s) from returned URL(s).
-
-> Do NOT read the Python script. Just call it with the appropriate parameters.
+If the user explicitly requests **only an image** (not a video), skip Phase 3 (video generation) and go directly to Phase 4 after image generation completes.
 
 ---
-
-## Video Generation Example
-
-User request: "Generate a short video clip depicting the opening scene from The Chronicles of Narnia"
-
-### Step 1: Research & Plan
-
-Search for details about the opening scene of "The Chronicles of Narnia: The Lion, the Witch and the Wardrobe".
-
-### Step 2: Create Prompt
-
-Write a detailed text prompt:
-
-```
-World War II evacuation scene at a crowded London train station. Steam and smoke fill the air as children are being sent to the countryside to escape the Blitz. Close-up two-shot of Mrs. Pevensie and young Lucy Pevensie on the platform. Mrs. Pevensie says "You must be brave for me, darling. I'll come for you... I promise." Lucy responds "I will be, mother. I promise." A train whistle blows as the train begins to depart. Strings swell emotionally in the background. Cinematic lighting, 1940s period detail, warm golden tones mixed with cool blues of the steam.
-```
-
-### Step 3: Generate Reference Image (Optional)
-
-Generate a reference image first for better video quality:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py \
-  --prompt "World War II London train station, Mrs. Pevensie and young Lucy saying goodbye, steam and crowd, cinematic 1940s period detail, warm golden lighting, close-up two-shot" \
-  --output-file /mnt/user-data/outputs/reference.jpg \
-  --size 2K
-```
-
-### Step 4: Execute Video Generation
-
-Using the reference image from Step 3:
-
-```bash
-python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
-  --prompt "World War II evacuation scene at a crowded London train station. Steam and smoke fill the air as children are being sent to the countryside to escape the Blitz. Close-up two-shot of Mrs. Pevensie and young Lucy Pevensie on the platform." \
-  --reference-images /mnt/user-data/outputs/reference.jpg \
-  --output-file /mnt/user-data/outputs/output.mp4 \
-  --duration 5 \
-  --ratio 16:9
-```
-
-## Output Handling
-
-After generation:
-
-- Videos are typically saved in `/mnt/user-data/outputs/`
-- Present the generated video to the user first using the appropriate presentation tool
-- If a reference image was generated (Step 3), present it after the video
-- Provide a brief description of the generation result
-- Offer to iterate or adjust if improvements are needed
 
 ## Notes
 
-- Always use English for prompts regardless of the user's language
+- **Always use English for prompts** regardless of the user's language
 - Detailed, descriptive prompts produce significantly better results
 - Reference images enhance generation quality, especially for visual consistency
 - Video generation is async and may take several minutes — inform the user about estimated wait time
 - Volcengine Ark video/image URLs are temporary; files are automatically downloaded to the specified output path
+- **Do NOT ask the user for confirmation before executing** — run the pipeline immediately when triggered
