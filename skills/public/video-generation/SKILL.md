@@ -46,11 +46,18 @@ Both status files share the same JSON structure:
   "status": "idle",
   "prompt": "the prompt used for generation",
   "output_path": "/mnt/user-data/outputs/xxx.png",
+  "image_url": null,
+  "video_url": null,
+  "task_id": null,
   "started_at": null,
   "completed_at": null,
   "error": null
 }
 ```
+
+> - `task_id` is only used by the video generation status file.
+> - `image_url` is set after image generation completes; it is the HTTP URL returned by the API.
+> - `video_url` is set after video generation completes; it is the HTTP URL returned by the API.
 
 **Possible `status` values:**
 
@@ -115,6 +122,7 @@ Generate a reference image to guide video generation (reference images significa
   "status": "running",
   "prompt": "the prompt text",
   "output_path": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "image_url": null,
   "started_at": "<current ISO timestamp>",
   "completed_at": null,
   "error": null
@@ -130,13 +138,14 @@ python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py 
   --size 2K
 ```
 
-3. On success, update the status file:
+3. On success, the script outputs both the local path and the image URL. Extract the `Image URL: xxx` from the output and update the status file:
 
 ```json
 {
   "status": "completed",
   "prompt": "the prompt text",
   "output_path": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "image_url": "<the extracted image URL from script output>",
   "started_at": "<start timestamp>",
   "completed_at": "<current ISO timestamp>",
   "error": null
@@ -150,6 +159,7 @@ python /mnt/skills/public/video-generation/scripts/generate_volcengine_image.py 
   "status": "failed",
   "prompt": "the prompt text",
   "output_path": null,
+  "image_url": null,
   "started_at": "<start timestamp>",
   "completed_at": "<current ISO timestamp>",
   "error": "<error message from script output>"
@@ -169,32 +179,57 @@ Use the reference image from Phase 2 to generate the video.
   "status": "running",
   "prompt": "the prompt text",
   "output_path": "/mnt/user-data/outputs/{descriptive-name}.mp4",
-  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "reference_image": "<image URL or local path>",
+  "image_url": null,
+  "video_url": null,
+  "task_id": null,
   "started_at": "<current ISO timestamp>",
   "completed_at": null,
   "error": null
 }
 ```
 
-2. Execute the video generation script:
+2. Execute the video generation script. **IMPORTANT**: Use the `image_url` from `image_generation_status.json` (the HTTP URL returned by the API) as the `--reference-images` parameter. This is preferred over local file paths because it avoids unnecessary re-uploading and ensures better quality:
 
 ```bash
 python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py \
   --prompt "<the generated prompt>" \
-  --reference-images /mnt/user-data/outputs/{descriptive-name}_reference.png \
+  --reference-images <image_url from image_generation_status.json> \
   --output-file /mnt/user-data/outputs/{descriptive-name}.mp4 \
   --duration 5 \
   --ratio 16:9
 ```
 
-3. On success, update the status file:
+> If for any reason `image_url` is not available (e.g., the API returned only base64 data), fall back to using the local file path from `output_path` in `image_generation_status.json`.
+
+**IMPORTANT**: The script submits an async task first, then polls for completion. As soon as the script outputs `Task submitted: {task_id}` (via stderr), extract the task_id and **immediately reply to the user** with the task_id before the polling completes. Also update `video_generation_status.json` to include the task_id:
+
+```json
+{
+  "status": "running",
+  "prompt": "the prompt text",
+  "output_path": "/mnt/user-data/outputs/{descriptive-name}.mp4",
+  "reference_image": "<image URL>",
+  "image_url": null,
+  "video_url": null,
+  "task_id": "<the extracted task_id>",
+  "started_at": "<start timestamp>",
+  "completed_at": null,
+  "error": null
+}
+```
+
+3. On success, the script outputs both the local path and the video URL. Extract the `Video URL: xxx` from the output and update the status file:
 
 ```json
 {
   "status": "completed",
   "prompt": "the prompt text",
   "output_path": "/mnt/user-data/outputs/{descriptive-name}.mp4",
-  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "reference_image": "<image URL>",
+  "image_url": null,
+  "video_url": "<the extracted video URL from script output>",
+  "task_id": "<the task_id>",
   "started_at": "<start timestamp>",
   "completed_at": "<current ISO timestamp>",
   "error": null
@@ -208,7 +243,10 @@ python /mnt/skills/public/video-generation/scripts/generate_volcengine_video.py 
   "status": "failed",
   "prompt": "the prompt text",
   "output_path": null,
-  "reference_image": "/mnt/user-data/outputs/{descriptive-name}_reference.png",
+  "reference_image": "<image URL>",
+  "image_url": null,
+  "video_url": null,
+  "task_id": "<the task_id or null>",
   "started_at": "<start timestamp>",
   "completed_at": "<current ISO timestamp>",
   "error": "<error message from script output>"
@@ -251,7 +289,7 @@ Parameters:
 | `--num` | No | 1 | Number of images to generate (1-4) |
 | `--seed` | No | — | Optional seed for reproducibility |
 
-**Flow**: Synchronous API call → Download image(s) from returned URL(s).
+**Flow**: Synchronous API call → Download image(s) from returned URL(s) → Output local path and image URL.
 
 ### Volcengine Video Generation
 
@@ -282,7 +320,7 @@ Parameters:
 
 *One of `--prompt` or `--prompt-file` is required.
 
-**Flow**: Submit async task → Poll status (5s interval) → Download video on completion.
+**Flow**: Submit async task → **Extract task_id from stderr output and reply to user immediately** → Poll status (5s interval) → Download video on completion → Output local path and video URL.
 
 > Do NOT read the Python scripts. Just call them with the appropriate parameters.
 

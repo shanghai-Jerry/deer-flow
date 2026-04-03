@@ -72,6 +72,7 @@ def generate_image(
         return f"No images in response: {data}"
 
     downloaded: list[str] = []
+    img_urls: list[str] = []
     for idx, img_item in enumerate(images):
         # Try common URL fields
         url = (
@@ -80,6 +81,10 @@ def generate_image(
         )
         if not url:
             continue
+
+        # Record HTTP URL for reference
+        if url.startswith("http://") or url.startswith("https://"):
+            img_urls.append(url)
 
         # Build output path for multiple images
         if num > 1:
@@ -110,8 +115,14 @@ def generate_image(
         return f"Failed to download any images from response: {data}"
 
     if len(downloaded) == 1:
-        return f"The image has been generated successfully to {downloaded[0]}"
-    return f"{len(downloaded)} images have been generated successfully to: {', '.join(downloaded)}"
+        msg = f"The image has been generated successfully to {downloaded[0]}"
+        if img_urls:
+            msg += f"\nImage URL: {img_urls[0]}"
+        return msg
+    msg = f"{len(downloaded)} images have been generated successfully to: {', '.join(downloaded)}"
+    if img_urls:
+        msg += f"\nImage URLs: {', '.join(img_urls)}"
+    return msg
 
 
 if __name__ == "__main__":

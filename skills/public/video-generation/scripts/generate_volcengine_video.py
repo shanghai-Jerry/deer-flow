@@ -124,7 +124,7 @@ def generate_video(
             with open(output_file, "wb") as f:
                 for chunk in video_resp.iter_content(chunk_size=8192):
                     f.write(chunk)
-            return f"The video has been generated successfully to {output_file}"
+            return f"The video has been generated successfully to {output_file}\nVideo URL: {video_url}"
 
         elif task_status == "failed":
             error_msg = poll_data.get("data", {}).get("error", {}).get("message", "Unknown error")
